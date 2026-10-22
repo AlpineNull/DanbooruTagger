@@ -63,6 +63,10 @@ v0.6.0 quality/diagnostics work should be tested separately before being tagged 
 - `test_logic.py` — regression tests
 - `1_SETUP.cmd` / `DanbooruTagger.vbs` — Windows setup and launcher
 
+## Development & credits
+
+The application code was developed with **ChatGPT (OpenAI)**, based on requirements, feature decisions, and iterative testing provided by the project maintainer, **AlpineNull**. The maintainer directs the project, validates changes, and publishes releases.
+
 ## License
 
 This project's original application code is licensed under the [MIT License](LICENSE). The PixAI model and third-party dependencies are subject to their respective licenses and are not redistributed with this repository.
