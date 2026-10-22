@@ -1,0 +1,24 @@
+DANBOORU TAGGER v0.5.1 - UPDATE
+================================
+1. Zamknij program.
+2. Skopiuj pliki z tej paczki do obecnego folderu DanbooruTagger.
+3. Zgodz sie na zastapienie plikow.
+4. Uruchom DanbooruTagger.vbs.
+
+NIE uruchamiaj 1_SETUP.cmd i NIE pobieraj modelu ponownie.
+Twoj .venv, model, settings.json, cache i zapisany API key zostaja na miejscu.
+
+ZMIANY v0.5.1
+- Naprawiono falszywe ostrzezenia character/copyright. v0.5.0 zgadywalo zgodnosc po
+  suffixie character taga, co np. blednie oznaczalo green_heart_(neptunia) przy
+  choujigen_game_neptune jako crossover. Teraz warning pojawia sie tylko wtedy, gdy
+  Danbooru related_tag potwierdza copyright postaci i nie zgadza sie on z copyrightem
+  obecnym w obrazie.
+- Dodano konflikt rozmiaru piersi dla pojedynczej postaci, np.
+  medium_breasts / large_breasts. Przy wielu postaciach warning jest tlumiony.
+- Dodano opcjonalne sugestie tagow tuz ponizej progu LOWEST. Model nadal wykonuje jeden
+  przebieg, tylko zwraca kilka nizej ocenionych kandydatow. Trafne, istniejace tagi sa
+  pokazywane w POMOC jako [NISKI PROG] i NIE sa dopisywane do HIGH/MEDIUM/LOW.
+  Ma to pomagac w missach typu gradient_background bez globalnego obnizania LOWEST.
+- Nowa sekcja cache character_copyrights. Cache v4 z v0.5.0 migruje sie automatycznie
+  do v5. Nie trzeba kasowac danbooru_cache.json.

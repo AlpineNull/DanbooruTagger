@@ -1,0 +1,23 @@
+Danbooru Tagger v0.5.1
+PixAI Tagger v1.0 backend
+Danbooru-aware cleanup: aliases, deprecated tags, implications
+Resolution autotags hidden
+Editable blacklist
+Deterministic cleanup: multiple_views -> solo, portrait -> upper_body, contextual role filtering
+Stage progress + model-load/GPU/Danbooru/total timings
+Danbooru cache/API request diagnostics
+Tag existence cache with positive/negative TTLs
+Automatic CUDA model unload after configurable idle timeout (default 10 min)
+Model state: loading / GPU / CPU / released
+Advisory character variant suggestions
+Advisory group character co-occurrence suggestions
+Character coverage check for multi-person images
+Character/copyright sanity warnings based on confirmed Danbooru relationships
+Group-aware tag-conflict warnings, including breast-size conflicts for single-subject images
+Greyscale/monochrome color-tag warnings
+Near-threshold advisory suggestions below LOWEST without adding them to output buckets
+Advisory translation_request suggestion for detected non-English text
+Blocked artist precheck by Artist URL / name using authenticated Danbooru API
+Danbooru login + API key test button
+Copy ALL with blank-line-separated HIGH / MEDIUM / LOWEST format
+Windows single-instance guard using a named mutex

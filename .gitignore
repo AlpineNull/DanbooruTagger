@@ -1,0 +1,28 @@
+# Python / local installation
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Downloaded machine learning model (large / third-party)
+models/
+.cache/
+
+# User-specific settings and authentication (do not commit)
+settings.json
+danbooru_api_key.bin
+danbooru_cache.json
+.env
+.env.*
+*.log
+
+# Local diagnostics
+confidence_*.csv
+confidence_*.txt
+
+# IDE and OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
