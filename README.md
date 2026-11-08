@@ -1,6 +1,6 @@
 # Danbooru Tagger
 
-**Developed with ChatGPT (OpenAI).** Project direction, requirements and iterative validation by **AlpineNull**.
+**Developed with ChatGPT (OpenAI).**
 
 Windows desktop application for tagging anime-style images with **PixAI Tagger v1.0**, local Danbooru tag metadata, and optional checks through the official Danbooru API. This is an independent project, not affiliated with Danbooru, PixAI, or OpenAI.
 
@@ -56,6 +56,6 @@ Image inference runs locally; the application does not upload the image to Danbo
 
 ## Credits and license
 
-**Application code developed with ChatGPT (OpenAI).** Project direction, requirements, and iterative validation: **AlpineNull**. Third-party model and data sources are separately licensed.
+**Application code developed with ChatGPT (OpenAI).** Third-party model and data sources are separately licensed.
 
 The original application code is licensed under the [MIT License](LICENSE). The PixAI model, offline tag data, and Python dependencies remain subject to their respective licenses.

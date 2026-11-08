@@ -2,8 +2,7 @@ DANBOORU TAGGER v0.7.2
 =======================
 
 Windows application for anime image tagging using PixAI Tagger v1.0.
-Application code developed with ChatGPT (OpenAI). Project direction and
-requirements by AlpineNull.
+Application code developed with ChatGPT (OpenAI).
 
 PIERWSZA INSTALACJA
 1. Rozpakuj paczke FULL do wybranego folderu na Windows.
