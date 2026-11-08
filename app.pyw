@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from credential_store import delete_secret, load_secret, save_secret, secret_exists
 from danbooru_client import DanbooruClient
+from quality_tools import validate_image_path, export_confidences, estimate_character_count
 
 APP_DIR = Path(__file__).resolve().parent
 MODEL_DIR = APP_DIR / "models" / "pixai-tagger-v1.0"
@@ -89,6 +90,7 @@ DEFAULT_SETTINGS = {
         "style": False,
     },
     "danbooru_cleanup": True,
+    "api_mode": "local",
     "hide_implied_parents": True,
     "blacklist": ["office_lady", "mature_female"],
     "danbooru_login": "",
@@ -101,6 +103,7 @@ DEFAULT_SETTINGS = {
     "character_context_checks": True,
     "greyscale_warnings": True,
     "near_threshold_suggestions": True,
+    "diagnostic_confidence_export": False,
 }
 
 
@@ -125,9 +128,14 @@ def load_settings():
                 "character_context_checks",
                 "greyscale_warnings",
                 "near_threshold_suggestions",
+                "diagnostic_confidence_export",
             ):
                 if key in saved:
                     settings[key] = bool(saved[key])
+            if saved.get('api_mode') in ('local', 'hybrid'):
+                settings['api_mode'] = saved['api_mode']
+            # Prior api_refresh_offline setting is intentionally not inherited:
+            # all users start v0.7.2 with zero automatic API calls by default.
             if "gpu_idle_unload_minutes" in saved:
                 try:
                     settings["gpu_idle_unload_minutes"] = max(0, int(saved["gpu_idle_unload_minutes"]))
@@ -349,16 +357,26 @@ def estimate_subject_minimum(tags):
     return total
 
 
-def find_character_coverage(tags, tag_info):
-    minimum = estimate_subject_minimum(tags)
-    character_tags = [
+def find_character_coverage(tags, tag_info, count_tags=None):
+    """Report missing character tags only with sufficiently reliable counts.
+
+    count_tags can be limited to HIGH/MEDIUM tags by the caller; LOWEST counts
+    often contradict other counts on the same image. In ambiguous situations
+    silently skip the numeric warning rather than inventing a minimum.
+    """
+    character_tags = list(dict.fromkeys(
         tag for tag in tags
         if (tag_info.get(tag) or {}).get("exists")
         and (tag_info.get(tag) or {}).get("category") == 4
-    ]
-    if minimum >= 2 and len(character_tags) < minimum:
+    ))
+    count_result = estimate_character_count(
+        count_tags if count_tags is not None else tags,
+        distinct_character_tags=character_tags,
+        multiple_views="multiple_views" in tags,
+    )
+    if count_result.warning:
         return {
-            "minimum_subjects": minimum,
+            "minimum_subjects": count_result.minimum,
             "recognized_characters": len(character_tags),
             "character_tags": character_tags,
         }
@@ -501,10 +519,18 @@ def format_cleanup_summary(report, blacklist_removed=None, rule_removed=None):
             parts.append(f"deprecated usunięte: {deprecated_count}")
         if implied_count:
             parts.append(f"implied parents ukryte: {implied_count}")
-        if report.get("network_failed"):
+        if report.get("cloudflare_challenge"):
+            parts.append("Cloudflare Challenge 403 — API wstrzymane")
+        elif report.get("network_failed"):
             parts.append("API Danbooru niedostępne")
         elif report.get("used_stale_cache"):
             parts.append("użyto części cache")
+        if report.get("offline_ready"):
+            parts.append("SQLite offline aktywne")
+        if report.get("network_mode") == "local":
+            parts.append("tryb lokalny tagów")
+        if report.get("source_conflicts"):
+            parts.append(f"konflikty źródeł: {len(report['source_conflicts'])}")
     if blacklist_removed:
         parts.append(f"blacklista: {len(blacklist_removed)}")
     if rule_removed:
@@ -634,6 +660,13 @@ class SettingsDialog(tk.Toplevel):
             frame, text="Pokazuj trafne tagi tuż poniżej progu LOWEST", variable=self.near_threshold_var
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
         row += 1
+        self.diagnostic_var = tk.BooleanVar(value=bool(settings.get("diagnostic_confidence_export", False)))
+        ttk.Checkbutton(
+            frame,
+            text="Diagnostyka: eksport confidence do CSV i TXT (opcjonalnie)",
+            variable=self.diagnostic_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+        row += 1
 
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=12)
         row += 1
@@ -653,6 +686,17 @@ class SettingsDialog(tk.Toplevel):
             frame,
             text="Ukrywaj implied parent tags",
             variable=self.implied_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+        row += 1
+        self.api_mode_var = tk.StringVar(value=settings.get("api_mode", "local"))
+        ttk.Radiobutton(
+            frame, text="Lokalny (domyślny): JSON + SQLite, bez zapytań o tagi",
+            variable=self.api_mode_var, value="local",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+        row += 1
+        ttk.Radiobutton(
+            frame, text="Hybrydowy: API dla brakujących/przeterminowanych danych",
+            variable=self.api_mode_var, value="hybrid",
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
         row += 1
         self.artist_check_var = tk.BooleanVar(value=bool(settings.get("check_blocked_artist", True)))
@@ -749,7 +793,7 @@ class SettingsDialog(tk.Toplevel):
                     suffix = f" ({level})" if level else ""
                     self.api_test_status_var.set(f"OK: {name}{suffix}")
                 elif status == "invalid":
-                    self.api_test_status_var.set("BŁĄD: login lub API key nieprawidłowy.")
+                    self.api_test_status_var.set("HTTP 401: login lub API key nieprawidłowy.")
                 else:
                     detail = result.get("error") or "nieznany błąd"
                     self.api_test_status_var.set(f"BŁĄD połączenia: {detail}")
@@ -793,6 +837,7 @@ class SettingsDialog(tk.Toplevel):
             "low": low,
             "categories": {key: var.get() for key, var in self.category_vars.items()},
             "danbooru_cleanup": self.cleanup_var.get(),
+            "api_mode": self.api_mode_var.get(),
             "hide_implied_parents": self.implied_var.get(),
             "blacklist": parse_blacklist(self.blacklist_text.get("1.0", "end-1c")),
             "danbooru_login": self.login_var.get().strip(),
@@ -805,6 +850,7 @@ class SettingsDialog(tk.Toplevel):
             "character_context_checks": self.character_context_var.get(),
             "greyscale_warnings": self.greyscale_var.get(),
             "near_threshold_suggestions": self.near_threshold_var.get(),
+            "diagnostic_confidence_export": self.diagnostic_var.get(),
         }
         self.on_save(new_settings)
         self.destroy()
@@ -813,7 +859,7 @@ class SettingsDialog(tk.Toplevel):
 class DanbooruTaggerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Danbooru Tagger v0.5.1")
+        self.title("Danbooru Tagger v0.7.2")
         self.geometry("1060x890")
         self.minsize(840, 700)
         self.settings = load_settings()
@@ -822,6 +868,7 @@ class DanbooruTaggerApp(tk.Tk):
         self.model_on_cuda = False
         self.model_device_name = None
         self.busy = False
+        self.last_result_tags = []
         self.last_activity = time.monotonic()
         self.api_key = load_secret(API_KEY_PATH)
         self.danbooru = DanbooruClient(
@@ -829,6 +876,7 @@ class DanbooruTaggerApp(tk.Tk):
             login=self.settings.get("danbooru_login", ""),
             api_key=self.api_key,
         )
+        self.danbooru.network_mode = self.settings.get("api_mode", "local")
 
         try:
             ttk.Style(self).theme_use("vista")
@@ -847,12 +895,16 @@ class DanbooruTaggerApp(tk.Tk):
         header = ttk.Frame(root)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
-        ttk.Label(header, text="Danbooru Tagger v0.5.1", font=("Segoe UI", 16, "bold")).grid(
+        ttk.Label(header, text="Danbooru Tagger v0.7.2", font=("Segoe UI", 16, "bold")).grid(
             row=0, column=0, sticky="w"
         )
+        self.refresh_api_btn = ttk.Button(
+            header, text="Odśwież tagi (API)", command=self.refresh_tags_via_api, state="disabled"
+        )
+        self.refresh_api_btn.grid(row=0, column=2, sticky="e", padx=(0, 8))
         self.copy_all_btn = ttk.Button(header, text="Kopiuj ALL", command=self.copy_all, state="disabled")
-        self.copy_all_btn.grid(row=0, column=2, sticky="e", padx=(0, 8))
-        ttk.Button(header, text="⚙ Ustawienia", command=self.open_settings).grid(row=0, column=3, sticky="e")
+        self.copy_all_btn.grid(row=0, column=3, sticky="e", padx=(0, 8))
+        ttk.Button(header, text="⚙ Ustawienia", command=self.open_settings).grid(row=0, column=4, sticky="e")
 
         choose = ttk.Frame(root)
         choose.grid(row=1, column=0, sticky="ew", pady=(16, 6))
@@ -871,13 +923,20 @@ class DanbooruTaggerApp(tk.Tk):
         ttk.Entry(source, textvariable=self.source_var).grid(row=0, column=1, sticky="ew", padx=(12, 8))
         ttk.Button(source, text="Wklej", command=self.paste_source).grid(row=0, column=2)
 
+        # Use a dedicated row for status: long LOCAL/HYBRID messages must not
+        # compete for horizontal space with the progress bar (v0.7.2).
         status_frame = ttk.Frame(root)
         status_frame.grid(row=3, column=0, sticky="ew", pady=(0, 3))
         status_frame.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value=self._initial_status())
-        ttk.Label(status_frame, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
-        self.progress = ttk.Progressbar(status_frame, mode="determinate", maximum=100, length=220)
-        self.progress.grid(row=0, column=1, sticky="e")
+        self.status_label = ttk.Label(status_frame, textvariable=self.status_var, justify="left")
+        self.status_label.grid(row=0, column=0, sticky="ew")
+        status_frame.bind(
+            "<Configure>",
+            lambda event: self.status_label.configure(wraplength=max(100, event.width - 8)),
+        )
+        self.progress = ttk.Progressbar(status_frame, mode="determinate", maximum=100)
+        self.progress.grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
         metrics_frame = ttk.Frame(root)
         metrics_frame.grid(row=4, column=0, sticky="ew", pady=(0, 7))
@@ -1004,7 +1063,13 @@ class DanbooruTaggerApp(tk.Tk):
         )
         if not path:
             return
+        valid, reason = validate_image_path(path, inspect_content=True)
+        if not valid:
+            messagebox.showerror("Nieprawidłowy obraz", reason)
+            return
         self.image_path = Path(path)
+        self.last_result_tags = []
+        self.refresh_api_btn.configure(state="disabled")
         self.path_var.set(str(self.image_path))
         self.source_var.set("")
         self.analyze_btn.configure(state="normal" if not self.busy else "disabled")
@@ -1031,9 +1096,50 @@ class DanbooruTaggerApp(tk.Tk):
         save_settings(settings)
         self.api_key = load_secret(API_KEY_PATH)
         self.danbooru.set_auth(settings.get("danbooru_login", ""), self.api_key)
+        self.danbooru.network_mode = settings.get("api_mode", "local")
         self.status_var.set(
             f"Ustawienia zapisane. Blacklista: {len(settings.get('blacklist', []))} tagów."
         )
+
+    def refresh_tags_via_api(self):
+        """Explicit network update for displayed tags; never runs as background polling."""
+        if self.busy or not self.last_result_tags:
+            return
+        names = list(self.last_result_tags)
+        if not messagebox.askyesno(
+            "Odśwież tagi Danbooru",
+            f"Sprawdzić {len(names)} tagów przez oficjalne API Danbooru?\n\n"
+            "Może to potrwać kilkanaście sekund. Przy blokadzie Cloudflare "
+            "próby zostaną wstrzymane. Po odświeżeniu ponownie uruchom ANALIZUJ, "
+            "aby zastosować nowe dane.", parent=self,
+        ):
+            return
+        self._activity_event()
+        self.set_busy(True)
+        self.status_var.set("Odświeżam metadane przez oficjalne API Danbooru...")
+
+        def worker():
+            try:
+                result = self.danbooru.refresh_metadata(names)
+            except Exception as exc:
+                result = {'status': 'error', 'error': str(exc), 'api_requests': 0}
+
+            def finish():
+                self.set_busy(False)
+                self.copy_all_btn.configure(state="normal" if self.last_result_tags else "disabled")
+                status = result.get('status')
+                count = result.get('api_requests', 0)
+                if status == 'ok':
+                    note = (f"Odświeżono dane przez API ({count} zapytań). "
+                            "Kliknij ANALIZUJ ponownie, aby zastosować zmiany.")
+                elif status == 'blocked':
+                    note = "Cloudflare 403 / cooldown: nie udało się odświeżyć. Zachowano JSON i SQLite."
+                else:
+                    note = f"Nie udało się odświeżyć API ({result.get('error') or status}). Lokalne dane bez zmian."
+                self.status_var.set(note)
+            self.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def clear_outputs(self):
         for key in self.text_widgets:
@@ -1075,17 +1181,28 @@ class DanbooruTaggerApp(tk.Tk):
 
     def set_busy(self, busy):
         self.busy = busy
-        self.analyze_btn.configure(state="disabled" if busy or self.image_path is None else "normal")
+        valid, _reason = validate_image_path(self.image_path)
+        self.analyze_btn.configure(state="normal" if valid and not busy else "disabled")
+        self.refresh_api_btn.configure(
+            state="normal" if self.last_result_tags and not busy else "disabled"
+        )
         if busy:
             self.copy_all_btn.configure(state="disabled")
 
     def analyze(self):
-        if self.busy or self.image_path is None:
+        if self.busy:
+            return
+        valid, reason = validate_image_path(self.image_path, inspect_content=True)
+        if not valid:
+            self.analyze_btn.configure(state="disabled")
+            self.status_var.set("Wybierz poprawny obraz przed analizą.")
+            messagebox.showerror("Nieprawidłowy obraz", reason)
             return
         if not (MODEL_DIR / "model.safetensors").exists():
             messagebox.showerror("Brak modelu", "Nie znaleziono modelu PixAI Tagger v1.0. Uruchom 1_SETUP.cmd.")
             return
         self._activity_event()
+        self.last_result_tags = []
         self.clear_outputs()
         self.set_advice("—")
         self.metrics_var.set("Model: — | GPU: — | Danbooru: — | Razem: —")
@@ -1186,19 +1303,37 @@ class DanbooruTaggerApp(tk.Tk):
             if artist_report.get("status") == "auth_missing" and source_text:
                 auth_note = "Blocked artist check pominięty: brak login/API key. "
             elif artist_report.get("status") == "error" and source_text:
-                auth_note = "Blocked artist check nieudany. "
+                auth_note = "Blocked artist: niezweryfikowany (API niedostępne). "
 
             tagger, model_load_time = self._load_model()
             self.set_stage("GPU: PixAI analizuje obraz...", 48)
             low_threshold = float(self.settings["low"])
             near_threshold_enabled = bool(self.settings.get("near_threshold_suggestions", True))
-            model_threshold = max(0.05, low_threshold - 0.07) if near_threshold_enabled else low_threshold
+            diagnostics_enabled = bool(self.settings.get("diagnostic_confidence_export", False))
+            # Optional diagnostic mode requests the widest available model output.
+            # This changes ONLY the return threshold, not model weights or the
+            # thresholds used to produce the three visible output buckets.
+            model_threshold = (0.0 if diagnostics_enabled else
+                               (max(0.05, low_threshold - 0.07)
+                                if near_threshold_enabled else low_threshold))
             gpu_start = time.perf_counter()
             raw = tagger(image, threshold=model_threshold)
             gpu_time = time.perf_counter() - gpu_start
             results = raw.get("results", raw)
 
             all_items = flatten_scores(results, self.settings["categories"])
+            diagnostic_note = ""
+            if diagnostics_enabled:
+                try:
+                    csv_path, txt_path = export_confidences(
+                        all_items, self.image_path, APP_DIR / "diagnostics"
+                    )
+                    diagnostic_note = (
+                        f"[DIAGNOSTYKA] Zapisano: diagnostics/{csv_path.name} "
+                        f"i diagnostics/{txt_path.name}"
+                    )
+                except (OSError, ValueError) as diag_error:
+                    diagnostic_note = f"[DIAGNOSTYKA] Eksport nieudany: {diag_error}"
             all_items = hide_resolution_autotags(all_items)
             near_items = select_near_threshold_candidates(
                 all_items, low_threshold, margin=0.07, limit=8,
@@ -1269,10 +1404,17 @@ class DanbooruTaggerApp(tk.Tk):
                 unknown_tags = [
                     tag for tag in final_tags
                     if tag in tag_info and not (tag_info.get(tag) or {}).get("exists")
+                    and self.danbooru._fresh(tag_info[tag], "tags")
                 ]
 
             if self.settings.get("character_context_checks", True) and tag_info:
-                coverage = find_character_coverage(final_tags, tag_info)
+                trusted_count_tags = [
+                    tag for tag, score in items
+                    if score >= float(self.settings["medium"])
+                ]
+                coverage = find_character_coverage(
+                    final_tags, tag_info, count_tags=trusted_count_tags
+                )
                 if character_tags:
                     self.set_stage("Danbooru: sprawdzam character/copyright...", 90)
                     cp_start = time.perf_counter()
@@ -1324,6 +1466,27 @@ class DanbooruTaggerApp(tk.Tk):
                 conflicts_enabled=bool(self.settings.get("conflict_warnings", True)),
             )
 
+            # Advisory only: preserve tags when two dated sources disagree.
+            offline_notes = []
+            if self.danbooru.network_mode == "local" and not source_text:
+                offline_notes.append("[LOKALNIE] Sprawdzanie tagów bez połączenia z API. "
+                                     "Nieznane w bazach tagi pozostają niezweryfikowane.")
+            if self.danbooru.cloudflare_challenge:
+                offline_notes.append("[SIEĆ] HTTP 403 Cloudflare Challenge: zatrzymano zapytania API (30 min). To nie dowodzi błędnego klucza.")
+            if not self.danbooru.offline.ready:
+                offline_notes.append("[OFFLINE] Brak lokalnej bazy tagów. Uruchom 2_SETUP_TAG_DATABASE.cmd; dotychczasowy JSON pozostaje dostępny.")
+            for conflict in sorted(self.danbooru.conflicts)[:12]:
+                offline_notes.append(f"[KONFLIKT] {conflict}: JSON/SQLite niezgodne — bez automatycznej podmiany lub usunięcia.")
+            if self.danbooru.conflicts and len(self.danbooru.conflicts) > 12:
+                offline_notes.append(f"[KONFLIKT] Pozostałych: {len(self.danbooru.conflicts)-12}")
+            if offline_notes:
+                advice_text = ("" if advice_text == "Brak dodatkowych sugestii." else advice_text + "\n") + "\n".join(offline_notes)
+
+            if diagnostic_note:
+                advice_text += ("\n" if advice_text and advice_text != "Brak dodatkowych sugestii." else "") + diagnostic_note
+                if advice_text.startswith("Brak dodatkowych sugestii."):
+                    advice_text = diagnostic_note
+
             self.set_stage("Przygotowuję wyniki...", 96)
             buckets = split_by_confidence(
                 items,
@@ -1354,6 +1517,7 @@ class DanbooruTaggerApp(tk.Tk):
                 artist_note = " Artist nieznany w bazie Danbooru."
 
             def finish():
+                self.last_result_tags = list(final_tags)
                 for key, text in rendered.items():
                     self.set_text(key, text)
                 count = sum(len(v) for v in buckets.values())
@@ -1367,7 +1531,7 @@ class DanbooruTaggerApp(tk.Tk):
                 self.status_var.set(status)
                 self.metrics_var.set(
                     f"Model: {model_load_time:.2f} s | GPU: {gpu_time:.2f} s | "
-                    f"Danbooru: {danbooru_time:.2f} s (cache {stats['cache_hits']} / API {stats['api_requests']}) | "
+                    f"Danbooru: {danbooru_time:.2f} s (JSON {stats['cache_hits']} / SQLite {stats['offline_hits']} / API {stats['api_requests']}) | "
                     f"Razem: {total_time:.2f} s"
                 )
                 self.copy_all_btn.configure(state="normal" if count else "disabled")
@@ -1385,7 +1549,7 @@ class DanbooruTaggerApp(tk.Tk):
                 stats = self.danbooru.run_stats()
                 self.metrics_var.set(
                     f"Model: {model_load_time:.2f} s | GPU: {gpu_time:.2f} s | "
-                    f"Danbooru: {danbooru_time:.2f} s (cache {stats['cache_hits']} / API {stats['api_requests']}) | "
+                    f"Danbooru: {danbooru_time:.2f} s (JSON {stats['cache_hits']} / SQLite {stats['offline_hits']} / API {stats['api_requests']}) | "
                     f"Razem: {total_time:.2f} s"
                 )
                 self.status_var.set("Błąd analizy. Szczegóły zapisano w error.log.")

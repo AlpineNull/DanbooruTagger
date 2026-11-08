@@ -262,6 +262,7 @@ def test_unknown_tag_is_cached_but_not_removed():
     with tempfile.TemporaryDirectory() as td:
         cache_path = Path(td) / "cache.json"
         client = DanbooruClient(cache_path)
+        client.network_mode = "hybrid"  # this legacy test intentionally exercises API
 
         def fake_get_json(path, params, **kwargs):
             client.api_requests += 1
@@ -308,6 +309,7 @@ def test_character_related_seeded_cache():
 def test_character_related_mock_prefix_and_implication():
     with tempfile.TemporaryDirectory() as td:
         client = DanbooruClient(Path(td) / "cache.json")
+        client.network_mode = "hybrid"  # this legacy test intentionally exercises API
 
         def fake_get_json(path, params, **kwargs):
             client.api_requests += 1
@@ -350,6 +352,7 @@ def test_character_related_mock_prefix_and_implication():
 def test_character_related_fuzzy_typhon():
     with tempfile.TemporaryDirectory() as td:
         client = DanbooruClient(Path(td) / "cache.json")
+        client.network_mode = "hybrid"  # this legacy test intentionally exercises API
 
         def fake_get_json(path, params, **kwargs):
             client.api_requests += 1
@@ -377,6 +380,7 @@ def test_character_related_fuzzy_typhon():
 def test_character_cooccurrence_abe():
     with tempfile.TemporaryDirectory() as td:
         client = DanbooruClient(Path(td) / "cache.json")
+        client.network_mode = "hybrid"  # this legacy test intentionally exercises API
 
         def fake_get_json(path, params, **kwargs):
             client.api_requests += 1
@@ -402,6 +406,7 @@ def test_character_cooccurrence_abe():
 def test_character_copyrights_green_heart():
     with tempfile.TemporaryDirectory() as td:
         client = DanbooruClient(Path(td) / "cache.json")
+        client.network_mode = "hybrid"  # this legacy test intentionally exercises API
 
         def fake_get_json(path, params, **kwargs):
             client.api_requests += 1

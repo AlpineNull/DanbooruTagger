@@ -1,21 +1,24 @@
 import base64
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from offline_tags import OfflineTags, SNAPSHOT_DATE
+
 API_BASE = "https://danbooru.donmai.us"
 CACHE_VERSION = 5
 CACHE_TTL_SECONDS = 24 * 60 * 60
 TAG_POSITIVE_TTL_SECONDS = 90 * 24 * 60 * 60
 TAG_NEGATIVE_TTL_SECONDS = 30 * 24 * 60 * 60
-USER_AGENT = "DanbooruTagger/0.5.1 (local personal tagging helper)"
+USER_AGENT = "DanbooruTagger/0.7.2 (local personal tagging helper)"
 
 
 class DanbooruClient:
-    """Read-only Danbooru API client with a local JSON cache.
+    """Danbooru API client: read-only SQLite + backwards-compatible JSON cache.
 
     Tag cleanup sends tag names only. Artist-ban checking sends only the Source
     URL (or artist name) entered by the user. The analyzed image is never sent.
@@ -33,6 +36,18 @@ class DanbooruClient:
         self.stale_cache_hits = 0
         self.api_requests = 0
         self.cache = self._load_cache()
+        self.offline = OfflineTags(self.cache_path.parent / "danbooru_tags.sqlite")
+        # LOCAL by default: ordinary analysis never contacts Danbooru.
+        # HYBRID explicitly allows missing/expired metadata to use the official API.
+        self.network_mode = 'local'
+        self._explicit_refresh = False
+        self._related_payload_cache = {}
+        self.offline_hits = 0
+        self.conflicts = set()
+        self.cloudflare_challenge = False
+        self._retry_after = 0.0
+        self._last_request_at = 0.0
+        self._rate_lock = threading.Lock()
 
     def set_auth(self, login: str, api_key: str):
         self.login = (login or "").strip()
@@ -43,18 +58,27 @@ class DanbooruClient:
         return bool(self.login and self.api_key)
 
     def reset_run_state(self):
-        self.network_failed = False
+        self.network_failed = time.time() < self._retry_after
+        self.cloudflare_challenge = self.network_failed
         self.used_stale_cache = False
-        self.last_error = None
+        self.last_error = "Cloudflare Challenge (cooldown)" if self.network_failed else None
         self.cache_hits = 0
         self.stale_cache_hits = 0
+        self.offline_hits = 0
+        self.conflicts = set()
         self.api_requests = 0
+        self._related_payload_cache = {}
 
     def run_stats(self):
         return {
             "cache_hits": int(self.cache_hits),
             "stale_cache_hits": int(self.stale_cache_hits),
             "api_requests": int(self.api_requests),
+            "network_mode": self.network_mode,
+            "offline_hits": int(self.offline_hits),
+            "offline_ready": bool(self.offline.ready),
+            "cloudflare_challenge": bool(self.cloudflare_challenge),
+            "source_conflicts": sorted(self.conflicts),
         }
 
     def _empty_cache(self):
@@ -111,6 +135,130 @@ class DanbooruClient:
         except Exception:
             return False
 
+    @staticmethod
+    def _material_values(section, record):
+        if record is None:
+            return None
+        if section == 'tags':
+            return (record.get('exists'), record.get('deprecated') if record.get('exists') else None,
+                    record.get('category') if record.get('exists') else None)
+        if section == 'aliases':
+            return record.get('canonical')
+        if section == 'implications':
+            return tuple(sorted(record.get('parents') or []))
+        return None
+
+    def _combine(self, section, names, cached, snapshot):
+        """A newer direct API record wins; unresolved disagreements never auto-correct.
+
+        The snapshot date is its data collection time, not download time.
+        A missing tag from the old snapshot is never treated as proof of absence.
+        """
+        merged = {}
+        for name in names:
+            old = cached.get(name)
+            new = snapshot.get(name)
+            if new is None:
+                if old is not None:
+                    merged[name] = dict(old)
+                    merged[name]['_source'] = 'json'
+                continue
+            self.offline_hits += 1
+            if old is None:
+                merged[name] = dict(new, _source='sqlite')
+                continue
+            old_date = float(old.get('checked_at') or 0)
+            differs = self._material_values(section, old) != self._material_values(section, new)
+            if old_date > SNAPSHOT_DATE:
+                merged[name] = dict(old, _source='json')
+            elif differs:
+                merged[name] = dict(new, _source='sqlite', _conflict=True)
+                self.conflicts.add(f'{section}: {name}')
+            else:
+                merged[name] = dict(new, _source='sqlite')
+        return merged
+
+    def _offline_records(self, section, names):
+        names = list(dict.fromkeys(names))
+        if not self.offline.ready:
+            return {}
+        if section == 'tags':
+            return self.offline.tags(names)
+        # No alias/implication in the snapshot counts as a known negative ONLY
+        # for canonical tags that are actually present in that snapshot.
+        known = set(self.offline.tags(names))
+        found = self.offline.aliases(names) if section == 'aliases' else self.offline.implications(names)
+        for tag in known - set(found):
+            found[tag] = {'canonical': None} if section == 'aliases' else {'parents': []}
+        return found
+
+    def _resolve_offline(self, section, names, cached):
+        return self._combine(section, names, cached, self._offline_records(section, names))
+
+    def _online_allowed(self):
+        return self.network_mode == 'hybrid' or self._explicit_refresh
+
+    def _should_fetch(self, section, names, resolved):
+        # No implicit tag/alias/implication traffic in default local mode.
+        if not self._online_allowed():
+            return []
+        if self._explicit_refresh:
+            return list(dict.fromkeys(names))
+        # Hybrid mode checks only genuinely unknown or expired JSON-only entries.
+        return [name for name in names
+                if name not in resolved or
+                (resolved[name].get('_source') == 'json'
+                 and not self._fresh(resolved[name], section))]
+
+    def refresh_metadata(self, tag_names):
+        """Explicit, user-initiated official API refresh; no background polling.
+
+        Updates only the existing local JSON cache, never the SQLite snapshot.
+        After completion the GUI can re-analyze to apply new metadata.
+        """
+        names = list(dict.fromkeys(str(n).strip() for n in tag_names if str(n).strip()))
+        if not names:
+            return {'status': 'empty', 'api_requests': 0}
+        self.reset_run_state()
+        if self.network_failed:
+            return {'status': 'blocked', 'api_requests': 0, 'error': self.last_error}
+        self._explicit_refresh = True
+        try:
+            for getter in (self.get_tag_info, self.get_aliases, self.get_implications):
+                if self.network_failed:
+                    break
+                getter(names)
+            self.save()
+        finally:
+            self._explicit_refresh = False
+        return {
+            'status': 'blocked' if self.cloudflare_challenge else
+                      'error' if self.network_failed else 'ok',
+            'api_requests': self.api_requests,
+            'error': self.last_error,
+        }
+
+    def _related_frequent(self, name):
+        """Share /related_tag.json response between co-occurrence and copyright checks."""
+        if name in self._related_payload_cache:
+            return self._related_payload_cache[name]
+        result = self._get_json('/related_tag.json', {
+            'search[query]': name, 'type': 'frequent',
+        })
+        self._related_payload_cache[name] = result
+        return result
+
+    def _note_http_failure(self, exc):
+        self.last_error = str(exc)
+        if isinstance(exc, urllib.error.HTTPError):
+            if exc.code == 403 and exc.headers.get('Cf-Mitigated', '').lower() == 'challenge':
+                self.cloudflare_challenge = True
+                self.last_error = 'HTTP 403: Cloudflare Challenge (to nie oznacza błędnego klucza API)'
+                self._retry_after = time.time() + 1800
+            elif exc.code == 429:
+                self._retry_after = time.time() + 300
+        self.network_failed = True
+
     def _auth_header(self):
         if not self.is_authenticated:
             return None
@@ -118,8 +266,8 @@ class DanbooruClient:
         return f"Basic {token}"
 
     def _get_json(self, path, params, *, ignore_failed_state=False, mark_failed_state=True):
-        if self.network_failed and not ignore_failed_state:
-            raise OSError("Danbooru API unavailable in this run")
+        if (self.network_failed or time.time() < self._retry_after):
+            raise OSError("Danbooru API unavailable (or Cloudflare cooldown)")
         query = urllib.parse.urlencode(params)
         url = f"{API_BASE}{path}?{query}" if query else f"{API_BASE}{path}"
         headers = {
@@ -130,14 +278,17 @@ class DanbooruClient:
         if auth:
             headers["Authorization"] = auth
         req = urllib.request.Request(url, headers=headers)
+        with self._rate_lock:
+            remaining = 1.0 - (time.monotonic() - self._last_request_at)
+            if remaining > 0:
+                time.sleep(remaining)
+            self._last_request_at = time.monotonic()
         self.api_requests += 1
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-            if mark_failed_state:
-                self.network_failed = True
-            self.last_error = str(exc)
+            self._note_http_failure(exc)
             raise
 
     def _get_cached_or_missing(self, section, names):
@@ -159,103 +310,76 @@ class DanbooruClient:
 
     def get_tag_info(self, names):
         names = list(dict.fromkeys(names))
-        result, missing = self._get_cached_or_missing("tags", names)
-        now = time.time()
-
-        if missing and not self.network_failed:
+        cached, _missing = self._get_cached_or_missing('tags', names)
+        merged = self._resolve_offline('tags', names, cached)
+        missing = self._should_fetch('tags', names, merged)
+        if missing and not self.network_failed and time.time() >= self._retry_after:
             try:
                 for chunk in self._chunks(missing):
-                    rows = self._get_json(
-                        "/tags.json",
-                        {
-                            "limit": 1000,
-                            "only": "name,is_deprecated,category,post_count",
-                            "search[name_normalize]": ",".join(chunk),
-                        },
-                    )
-                    found = {row.get("name"): row for row in rows if row.get("name")}
+                    rows = self._get_json('/tags.json', {
+                        'limit': 1000, 'only': 'name,is_deprecated,category,post_count',
+                        'search[name_normalize]': ','.join(chunk),
+                    })
+                    found = {r.get('name'): r for r in rows if r.get('name')}
+                    now = time.time()
                     for name in chunk:
                         row = found.get(name)
-                        entry = {
-                            "exists": row is not None,
-                            "deprecated": bool(row.get("is_deprecated")) if row else False,
-                            "category": row.get("category") if row else None,
-                            "post_count": row.get("post_count") if row else None,
-                            "checked_at": now,
-                        }
-                        self.cache["tags"][name] = entry
-                        result[name] = entry
+                        entry = {'exists': row is not None, 'deprecated': bool(row.get('is_deprecated')) if row else False,
+                                 'category': row.get('category') if row else None,
+                                 'post_count': row.get('post_count') if row else None, 'checked_at': now}
+                        self.cache['tags'][name] = entry
+                        merged[name] = dict(entry, _source='api')
             except Exception:
                 pass
-        return result
+        return merged
 
     def get_aliases(self, names):
         names = list(dict.fromkeys(names))
-        result, missing = self._get_cached_or_missing("aliases", names)
-        now = time.time()
-
-        if missing and not self.network_failed:
+        cached, _missing = self._get_cached_or_missing('aliases', names)
+        merged = self._resolve_offline('aliases', names, cached)
+        missing = self._should_fetch('aliases', names, merged)
+        if missing and not self.network_failed and time.time() >= self._retry_after:
             try:
                 for chunk in self._chunks(missing):
-                    rows = self._get_json(
-                        "/tag_aliases.json",
-                        {
-                            "limit": 1000,
-                            "only": "antecedent_name,consequent_name,status",
-                            "search[status]": "active",
-                            "search[antecedent_name_comma]": ",".join(chunk),
-                        },
-                    )
-                    found = {
-                        row.get("antecedent_name"): row.get("consequent_name")
-                        for row in rows
-                        if row.get("status") == "active"
-                        and row.get("antecedent_name")
-                        and row.get("consequent_name")
-                    }
+                    rows = self._get_json('/tag_aliases.json', {
+                        'limit': 1000, 'only': 'antecedent_name,consequent_name,status',
+                        'search[status]': 'active', 'search[antecedent_name_comma]': ','.join(chunk),
+                    })
+                    found = {r['antecedent_name']: r['consequent_name'] for r in rows
+                             if r.get('status') == 'active' and r.get('antecedent_name') and r.get('consequent_name')}
+                    now = time.time()
                     for name in chunk:
-                        entry = {"canonical": found.get(name), "checked_at": now}
-                        self.cache["aliases"][name] = entry
-                        result[name] = entry
+                        entry = {'canonical': found.get(name), 'checked_at': now}
+                        self.cache['aliases'][name] = entry
+                        merged[name] = dict(entry, _source='api')
             except Exception:
                 pass
-        return result
+        return merged
 
     def get_implications(self, names):
         names = list(dict.fromkeys(names))
-        result, missing = self._get_cached_or_missing("implications", names)
-        now = time.time()
-
-        if missing and not self.network_failed:
+        cached, _missing = self._get_cached_or_missing('implications', names)
+        merged = self._resolve_offline('implications', names, cached)
+        missing = self._should_fetch('implications', names, merged)
+        if missing and not self.network_failed and time.time() >= self._retry_after:
             try:
                 for chunk in self._chunks(missing):
-                    rows = self._get_json(
-                        "/tag_implications.json",
-                        {
-                            "limit": 1000,
-                            "only": "antecedent_name,consequent_name,status",
-                            "search[status]": "active",
-                            "search[antecedent_name_comma]": ",".join(chunk),
-                        },
-                    )
+                    rows = self._get_json('/tag_implications.json', {
+                        'limit': 1000, 'only': 'antecedent_name,consequent_name,status',
+                        'search[status]': 'active', 'search[antecedent_name_comma]': ','.join(chunk),
+                    })
                     found = {name: [] for name in chunk}
-                    for row in rows:
-                        if row.get("status") != "active":
-                            continue
-                        ant = row.get("antecedent_name")
-                        con = row.get("consequent_name")
-                        if ant in found and con:
-                            found[ant].append(con)
+                    for r in rows:
+                        if r.get('status') == 'active' and r.get('antecedent_name') in found and r.get('consequent_name'):
+                            found[r['antecedent_name']].append(r['consequent_name'])
+                    now = time.time()
                     for name in chunk:
-                        entry = {
-                            "parents": sorted(set(found.get(name, []))),
-                            "checked_at": now,
-                        }
-                        self.cache["implications"][name] = entry
-                        result[name] = entry
+                        entry = {'parents': sorted(set(found[name])), 'checked_at': now}
+                        self.cache['implications'][name] = entry
+                        merged[name] = dict(entry, _source='api')
             except Exception:
                 pass
-        return result
+        return merged
 
     @staticmethod
     def _split_character_tag(tag):
@@ -309,6 +433,13 @@ class DanbooruClient:
                 self.stale_cache_hits += 1
                 result[name] = list(cached.get("suggestions", []))[:limit_per_character]
 
+            if not self._online_allowed():
+                # Snapshot-based prefix search plus existing JSON suggestions.
+                # Never store an empty network result as a fresh cache entry.
+                local = self.offline.character_variants(name, limit=limit_per_character)
+                if local:
+                    result[name] = list(dict.fromkeys(local + result.get(name, [])))[:limit_per_character]
+                continue
             if self.network_failed:
                 continue
 
@@ -429,18 +560,11 @@ class DanbooruClient:
                 self.stale_cache_hits += 1
                 result[name] = list(cached.get("suggestions", []))[:limit_per_character]
 
-            if self.network_failed:
+            if self.network_failed or not self._online_allowed():
                 continue
 
             try:
-                payload = self._get_json(
-                    "/related_tag.json",
-                    {
-                        "search[query]": name,
-                        "type": "frequent",
-                    },
-                    mark_failed_state=False,
-                )
+                payload = self._related_frequent(name)
             except Exception:
                 result.setdefault(name, [])
                 continue
@@ -492,18 +616,11 @@ class DanbooruClient:
                 self.stale_cache_hits += 1
                 result[name] = list(cached.get("copyrights", []))[:limit_per_character]
 
-            if self.network_failed:
+            if self.network_failed or not self._online_allowed():
                 continue
 
             try:
-                payload = self._get_json(
-                    "/related_tag.json",
-                    {
-                        "search[query]": name,
-                        "type": "frequent",
-                    },
-                    mark_failed_state=False,
-                )
+                payload = self._related_frequent(name)
             except Exception:
                 result.setdefault(name, [])
                 continue
@@ -542,9 +659,10 @@ class DanbooruClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403):
-                return {"status": "invalid", "error": f"HTTP {exc.code}"}
-            return {"status": "error", "error": f"HTTP {exc.code}: {exc.reason}"}
+            self._note_http_failure(exc)
+            if exc.code == 401:
+                return {"status": "invalid", "error": "HTTP 401"}
+            return {"status": "error", "error": self.last_error}
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             return {"status": "error", "error": str(exc)}
         except Exception as exc:
@@ -583,7 +701,7 @@ class DanbooruClient:
             params["search[any_name_matches]"] = source
 
         try:
-            rows = self._get_json("/artists.json", params, ignore_failed_state=True)
+            rows = self._get_json("/artists.json", params)
         except Exception:
             return {
                 "status": "error",
@@ -610,7 +728,8 @@ class DanbooruClient:
             changed = False
             next_map = {}
             for tag, score in current.items():
-                canonical = (aliases.get(tag) or {}).get("canonical") or tag
+                record = aliases.get(tag) or {}
+                canonical = tag if record.get('_conflict') else record.get('canonical') or tag
                 if canonical != tag:
                     alias_replacements += 1
                     changed = True
@@ -632,7 +751,7 @@ class DanbooruClient:
                 kept[tag] = score
                 unknown.append(tag)
                 continue
-            if meta.get("exists") and meta.get("deprecated"):
+            if meta.get("exists") and meta.get("deprecated") and not meta.get('_conflict'):
                 removed.append(tag)
                 continue
             if not meta.get("exists"):
@@ -653,7 +772,8 @@ class DanbooruClient:
             rows = self.get_implications(batch)
             new_frontier = set()
             for tag in batch:
-                parents = list((rows.get(tag) or {}).get("parents", []))
+                row = rows.get(tag) or {}
+                parents = [] if row.get('_conflict') else list(row.get('parents', []))
                 graph[tag] = parents
                 for parent in parents:
                     if parent not in visited:
@@ -705,6 +825,9 @@ class DanbooruClient:
             "network_failed": self.network_failed,
             "used_stale_cache": self.used_stale_cache,
             "last_error": self.last_error,
+            "source_conflicts": sorted(self.conflicts),
+            "offline_ready": self.offline.ready,
+            "cloudflare_challenge": self.cloudflare_challenge,
         }
         report.update(self.run_stats())
         return cleaned, report

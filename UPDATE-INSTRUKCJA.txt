@@ -1,24 +1,19 @@
-DANBOORU TAGGER v0.5.1 - UPDATE
+DANBOORU TAGGER v0.7.2 — UPDATE
 ================================
-1. Zamknij program.
-2. Skopiuj pliki z tej paczki do obecnego folderu DanbooruTagger.
-3. Zgodz sie na zastapienie plikow.
-4. Uruchom DanbooruTagger.vbs.
+1. Zamknij aplikacje Danbooru Tagger.
+2. Rozpakuj pliki UPDATE bezposrednio do folderu programu (tam, gdzie app.pyw).
+   Potwierdz nadpisanie starych plikow. W ZIP nie ma katalogu nadrzednego.
+3. Uruchom DanbooruTagger.vbs.
 
-NIE uruchamiaj 1_SETUP.cmd i NIE pobieraj modelu ponownie.
-Twoj .venv, model, settings.json, cache i zapisany API key zostaja na miejscu.
+Nie uruchamiaj ponownie 1_SETUP.cmd. Zachowane zostaja: .venv, modele,
+settings.json, danbooru_api_key.bin, danbooru_cache.json, danbooru_tags.sqlite.
+Jezeli bazy SQLite nie ma, opcjonalnie uruchom 2_SETUP_TAG_DATABASE.cmd.
 
-ZMIANY v0.5.1
-- Naprawiono falszywe ostrzezenia character/copyright. v0.5.0 zgadywalo zgodnosc po
-  suffixie character taga, co np. blednie oznaczalo green_heart_(neptunia) przy
-  choujigen_game_neptune jako crossover. Teraz warning pojawia sie tylko wtedy, gdy
-  Danbooru related_tag potwierdza copyright postaci i nie zgadza sie on z copyrightem
-  obecnym w obrazie.
-- Dodano konflikt rozmiaru piersi dla pojedynczej postaci, np.
-  medium_breasts / large_breasts. Przy wielu postaciach warning jest tlumiony.
-- Dodano opcjonalne sugestie tagow tuz ponizej progu LOWEST. Model nadal wykonuje jeden
-  przebieg, tylko zwraca kilka nizej ocenionych kandydatow. Trafne, istniejace tagi sa
-  pokazywane w POMOC jako [NISKI PROG] i NIE sa dopisywane do HIGH/MEDIUM/LOW.
-  Ma to pomagac w missach typu gradient_background bez globalnego obnizania LOWEST.
-- Nowa sekcja cache character_copyrights. Cache v4 z v0.5.0 migruje sie automatycznie
-  do v5. Nie trzeba kasowac danbooru_cache.json.
+LOCAL jest domyslnym trybem weryfikacji (JSON + SQLite, bez automatycznych
+zapytan o tagi). HYBRID mozna wybrac w Ustawieniach. Przyciskiem
+'Odswiez tagi (API)' mozna recznie odswiezyc tagi z analizowanego obrazu.
+Przy wpisanym Artist URL/nazwie i wlaczonej kontroli blocked artist
+mozliwe jest oddzielne polaczenie z API takze w trybie LOCAL.
+
+Zmiany w v0.7.2: oddzielny wiersz paska postepu, zawijanie komunikatu
+statusu i poprawki zarzadzania zasobami w testach Windows.

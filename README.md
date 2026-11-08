@@ -1,72 +1,61 @@
 # Danbooru Tagger
 
-A Windows desktop GUI for tagging anime-style illustrations with **PixAI Tagger v1.0**, with Danbooru-aware tag checks and cleanup.
+**Developed with ChatGPT (OpenAI).** Project direction, requirements and iterative validation by **AlpineNull**.
 
-**Current published baseline:** v0.5.1. The project is under active development and is not affiliated with Danbooru or PixAI.
+Windows desktop application for tagging anime-style images with **PixAI Tagger v1.0**, local Danbooru tag metadata, and optional checks through the official Danbooru API. This is an independent project, not affiliated with Danbooru, PixAI, or OpenAI.
 
 ## Screenshot
 
-![Danbooru Tagger v0.5.1 showing analysis results](assets/screenshot-v0.5.1.png)
+![Danbooru Tagger GUI showing image tagging results](assets/screenshot-v0.5.1.png)
 
-The screenshot demonstrates tag classification and Danbooru checks. Processing time depends on API latency and cache state.
-
+*GUI example from v0.5.1. The current version includes LOCAL/HYBRID modes and offline SQLite metadata support.*
 
 ## Features
 
-- Three editable confidence buckets: HIGH, MEDIUM and LOWEST.
-- GPU inference (NVIDIA CUDA) and CPU fallback.
-- Danbooru tag existence, alias, deprecation and implication checks.
-- Suggestions for missing character tags, conflicts and near-threshold predictions.
-- Editable blacklist, model idle unload and timing information.
-- Copy tags as space-separated strings, with no commas.
+- Three editable confidence groups: **HIGH**, **MEDIUM**, and **LOWEST**; configurable thresholds, blacklist, and tag copying.
+- Local inference with PixAI Tagger v1.0; NVIDIA CUDA acceleration when available, with CPU fallback.
+- Danbooru metadata checks for tag existence, aliases, deprecated tags, and implications.
+- Character-variant suggestions, contextual warnings, and optional raw confidence exports.
+- Local JSON cache and an optional SQLite tag metadata snapshot. Existing cache and settings are retained when updating.
+- **LOCAL (default):** process images and check locally available metadata without automatic Danbooru tag-API requests.
+- **HYBRID (optional):** look up missing or stale information through the official Danbooru API.
+- **Manual refresh:** use **Odśwież tagi (API)** after analysis to request newer metadata; analyze again to apply refreshed results.
+- Recognizes Cloudflare challenges, avoids retry loops, and continues with locally available information.
 
-## Requirements
+## Download and installation
 
-- Windows
-- Python 3.10 or later (the installer prefers Python 3.14)
-- An NVIDIA GPU for CUDA acceleration (CPU fallback is available)
-- Internet connection for initial model download and Danbooru lookups
+**Requirements:** Windows, Python 3.10 or newer (Python 3.14 preferred), and internet access for downloading the model and optional offline database. NVIDIA GPU is recommended for CUDA; CPU inference is also supported.
 
-## Quick start
+### New installation
 
-1. Download the source files (or a FULL release).
-2. Run `1_SETUP.cmd` once to create `.venv`, install dependencies and download the model (~2 GB).
-3. Start `DanbooruTagger.vbs`.
-4. Choose an image, optionally enter an artist URL/name, and click **ANALIZUJ**.
+1. Download the latest **FULL ZIP** from [Releases](https://github.com/AlpineNull/DanbooruTagger/releases/latest) and extract it to a writable folder.
+2. Run `1_SETUP.cmd`. It installs the Python environment, downloads the PixAI model (about 2 GB), and attempts to download an offline SQLite tag database (about 175 MB).
+3. Run `DanbooruTagger.vbs` to start the application.
+4. If the database was not downloaded, run `2_SETUP_TAG_DATABASE.cmd` separately. The application also works without SQLite, but local metadata coverage will be limited.
 
-Existing installations can use UPDATE releases: close the app and copy the update files over the current program directory. Do **not** rerun setup just to update the application.
+### Updating an existing installation
 
-**Note:** The setup script pins a specific PyTorch/CUDA version. If installation fails on another machine, review its CUDA and Python compatibility before making changes.
+1. Close the application and back up user data if desired.
+2. Download the latest **UPDATE ZIP** from [Releases](https://github.com/AlpineNull/DanbooruTagger/releases/latest).
+3. Extract the ZIP **into the existing application folder**, overwriting the old code files.
+4. Start `DanbooruTagger.vbs`. Do not rerun `1_SETUP.cmd` when updating an existing installation.
 
-## Privacy and credentials
+The update does not overwrite your `.venv/`, `models/`, `settings.json`, `danbooru_api_key.bin`, `danbooru_cache.json`, or `danbooru_tags.sqlite`.
 
-Images are analyzed locally. The app sends **tag names**, not image files, to Danbooru during tag checks. Optional artist checks use the artist URL/name. The Danbooru API key is stored locally through Windows DPAPI.
+## Online and offline tag data
 
-Never commit the generated `settings.json`, `danbooru_api_key.bin`, `danbooru_cache.json`, `.venv/` or `models/` folders. The included `.gitignore` excludes them; please also verify staged files before every commit.
+The offline SQLite database is an independently published [Danbooru tag metadata snapshot](https://huggingface.co/datasets/hlibr/danbooru-tag-metadata-snapshot) dated **2026-04-08**, downloaded separately from Hugging Face. It contains metadata, not images. The model weights and offline database are **not included** in this repository or the application ZIPs.
 
-## Development and tests
+A tag missing from an older snapshot is **not automatically considered nonexistent**. Where JSON and SQLite disagree, the application considers their timestamps and avoids automatic destructive corrections when a conflict cannot be resolved reliably.
 
-Use `test_logic.py` for logic regression checks:
+**Note:** If you enter an **Artist URL / name** while the optional blocked-artist precheck is enabled, the app may contact the official Danbooru API even in LOCAL mode. If the API is unavailable, artist status remains **unverified**. HYBRID mode and manual refresh also use the API. No browser impersonation or Cloudflare bypass is used.
 
-```powershell
-py test_logic.py
-```
+## Privacy
 
-v0.6.0 quality/diagnostics work should be tested separately before being tagged as a release.
+Image inference runs locally; the application does not upload the image to Danbooru. API operations can submit tag names and, if supplied for the optional artist check, the artist URL/name. An API key is stored locally using Windows DPAPI. Keep `settings.json`, `danbooru_api_key.bin`, caches, and local diagnostic exports out of public repositories.
 
-## Project files
+## Credits and license
 
-- `app.pyw` — desktop GUI, inference and post-processing
-- `danbooru_client.py` — Danbooru lookups and caching
-- `credential_store.py` — Windows DPAPI secret storage
-- `download_model.py` — PixAI model download
-- `test_logic.py` — regression tests
-- `1_SETUP.cmd` / `DanbooruTagger.vbs` — Windows setup and launcher
+**Application code developed with ChatGPT (OpenAI).** Project direction, requirements, and iterative validation: **AlpineNull**. Third-party model and data sources are separately licensed.
 
-## Development & credits
-
-The application code was developed with **ChatGPT (OpenAI)**, based on requirements, feature decisions, and iterative testing provided by the project maintainer, **AlpineNull**. The maintainer directs the project, validates changes, and publishes releases.
-
-## License
-
-This project's original application code is licensed under the [MIT License](LICENSE). The PixAI model and third-party dependencies are subject to their respective licenses and are not redistributed with this repository.
+The original application code is licensed under the [MIT License](LICENSE). The PixAI model, offline tag data, and Python dependencies remain subject to their respective licenses.
