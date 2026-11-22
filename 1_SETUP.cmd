@@ -1,11 +1,11 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Danbooru Tagger v0.7.2 - pierwsza konfiguracja
+title Danbooru Tagger v0.7.3 - pierwsza konfiguracja
 
 echo.
 echo ==============================================
-echo   Danbooru Tagger v0.7.2 - pierwsza konfiguracja
+echo   Danbooru Tagger v0.7.3 - pierwsza konfiguracja
 echo ==============================================
 echo.
 echo Ten krok tworzy lokalne srodowisko, instaluje PyTorch CUDA
