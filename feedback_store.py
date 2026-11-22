@@ -26,6 +26,11 @@ def parse_edited_tags(outputs):
     return tags
 
 
+def parse_tag_text(text):
+    """Parse one flat whitespace-separated final tag list, without duplicates."""
+    return list(dict.fromkeys(str(text).split()))
+
+
 def image_sha256(path):
     """Use image content, not the potentially sensitive local file name."""
     digest = hashlib.sha256()
@@ -36,8 +41,8 @@ def image_sha256(path):
 
 
 def build_feedback_record(
-    image_path, original_tags, edited_buckets, *,
-    tag_scores=None, thresholds=None, app_version="", model_id="",
+    image_path, original_tags, edited_buckets=None, *,
+    reviewed_tags_text=None, tag_scores=None, thresholds=None, app_version="", model_id="",
 ):
     """Build a review record without changing user-entered tags.
 
@@ -45,7 +50,12 @@ def build_feedback_record(
     Confidence values refer to those displayed tags before manual corrections.
     """
     original_tags = list(dict.fromkeys(original_tags))
-    final_tags = parse_edited_tags(edited_buckets)
+    if reviewed_tags_text is None and edited_buckets is None:
+        raise ValueError("Provide reviewed_tags_text or edited_buckets")
+    final_tags = (parse_tag_text(reviewed_tags_text) if reviewed_tags_text is not None
+                  else parse_edited_tags(edited_buckets))
+    if not final_tags:
+        raise ValueError("Final tag list is empty")
     original_set = set(original_tags)
     final_set = set(final_tags)
     scores = tag_scores or {}
@@ -63,8 +73,11 @@ def build_feedback_record(
         "reviewed_tags": final_tags,
         "added": [tag for tag in final_tags if tag not in original_set],
         "removed": [tag for tag in original_tags if tag not in final_set],
-        "reviewed_buckets": {bucket: str(edited_buckets.get(bucket, "")).strip()
-                             for bucket in BUCKETS},
+        "review_source": "final_list" if reviewed_tags_text is not None else "buckets",
+        "reviewed_buckets": (
+            {bucket: str(edited_buckets.get(bucket, "")).strip() for bucket in BUCKETS}
+            if reviewed_tags_text is None else None
+        ),
     }
 
 
