@@ -1061,6 +1061,9 @@ class DanbooruTaggerApp(tk.Tk):
             undo=False,
         )
         text.grid(row=text_row, column=0, sticky="nsew")
+        text.bind("<KeyRelease>", self._tag_editor_changed, add="+")
+        text.bind("<<Paste>>", self._tag_editor_changed, add="+")
+        text.bind("<<Cut>>", self._tag_editor_changed, add="+")
         self.text_widgets[key] = text
 
     def choose_image(self):
@@ -1168,6 +1171,10 @@ class DanbooruTaggerApp(tk.Tk):
         self.clipboard_append(text)
         self.update_idletasks()
         self.status_var.set(f"Skopiowano {key.upper()} do schowka.")
+
+    def _tag_editor_changed(self, _event=None):
+        if self.last_result_tags and not self.busy:
+            self.feedback_btn.configure(state="normal")
 
     def save_feedback(self):
         """Record explicit human review locally, without image path or pixels."""
