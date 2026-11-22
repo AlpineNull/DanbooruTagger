@@ -13,6 +13,7 @@ Windows desktop application for tagging anime-style images with **PixAI Tagger v
 ## Features
 
 - Three editable confidence groups: **HIGH**, **MEDIUM**, and **LOWEST**; configurable thresholds, blacklist, and tag copying.
+- **Development v0.7.3:** manually edit confidence buckets and click **Zapisz korektę** to append an opt-in JSONL review record to local `feedback/corrections.jsonl`. Image SHA-256, initial tags/confidences, reviewed tags and differences are recorded; image bytes and local file paths are not. This log is not sent to any service.
 - Local inference with PixAI Tagger v1.0; NVIDIA CUDA acceleration when available, with CPU fallback.
 - Danbooru metadata checks for tag existence, aliases, deprecated tags, and implications.
 - Character-variant suggestions, contextual warnings, and optional raw confidence exports.
@@ -52,7 +53,7 @@ A tag missing from an older snapshot is **not automatically considered nonexiste
 
 ## Privacy
 
-Image inference runs locally; the application does not upload the image to Danbooru. API operations can submit tag names and, if supplied for the optional artist check, the artist URL/name. An API key is stored locally using Windows DPAPI. Keep `settings.json`, `danbooru_api_key.bin`, caches, and local diagnostic exports out of public repositories.
+Image inference runs locally; the application does not upload the image to Danbooru. Manual review feedback is saved locally only when you click **Zapisz korektę**. The `feedback/` directory is ignored by Git and preserved during normal code-only updates. API operations can submit tag names and, if supplied for the optional artist check, the artist URL/name. An API key is stored locally using Windows DPAPI. Keep `settings.json`, `danbooru_api_key.bin`, caches, and local diagnostic exports out of public repositories.
 
 ## Credits and license
 
