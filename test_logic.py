@@ -95,6 +95,9 @@ def test_translation_request_suggestion():
     assert suggested_translation_request(["1girl", "japanese_text"]) == ["japanese_text"]
     assert suggested_translation_request(["japanese_text", "translation_request"]) == []
     assert suggested_translation_request(["english_text"]) == []
+    assert suggested_translation_request(["korean_text", "english_text", "bilingual_text"]) == []
+    assert suggested_translation_request(["korean_text", "bilingual_text"]) == []
+    assert suggested_translation_request(["korean_text", "english_text"]) == ["korean_text"]
 
 
 def test_conflict_warnings_single_subject():
