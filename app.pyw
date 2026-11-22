@@ -1177,27 +1177,63 @@ class DanbooruTaggerApp(tk.Tk):
             self.feedback_btn.configure(state="normal")
 
     def save_feedback(self):
-        """Record explicit human review locally, without image path or pixels."""
+        """Open one editor for the entire reviewed tag list, independent of buckets."""
         if self.busy or not self.image_path or not self.last_result_tags:
             return
-        try:
-            edited_buckets = {key: self._bucket_text(key) for key in ("high", "medium", "low")}
-            record = build_feedback_record(
-                self.image_path, self.last_result_tags, edited_buckets,
-                tag_scores=self.last_confidences,
-                thresholds={key: self.settings[key] for key in ("high", "medium", "low")},
-                app_version=APP_VERSION, model_id=MODEL_ID,
+        dialog = tk.Toplevel(self)
+        dialog.title("Zapisz korektę — końcowe tagi")
+        dialog.transient(self)
+        dialog.geometry("790x340")
+        dialog.minsize(500, 250)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+
+        ttk.Label(
+            dialog,
+            text="Wklej jedną końcową listę tagów z audytu. Nie dziel jej na HIGH / MEDIUM / LOWEST.",
+            wraplength=750,
+        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 5))
+        editor = tk.Text(dialog, wrap="word", font=("Consolas", 10), undo=True)
+        editor.grid(row=1, column=0, sticky="nsew", padx=12, pady=5)
+        # Start from all currently visible tags, but compare against the immutable
+        # initial model result when the review is saved.
+        editor.insert("1.0", " ".join(dict.fromkeys(
+            tag for key in ("high", "medium", "low")
+            for tag in self._bucket_text(key).split()
+        )))
+        editor.focus_set()
+        footer = ttk.Frame(dialog)
+        footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(5, 12))
+        footer.columnconfigure(0, weight=1)
+
+        def commit_review():
+            if self.busy or not self.last_result_tags:
+                return
+            try:
+                reviewed_text = editor.get("1.0", "end-1c")
+                record = build_feedback_record(
+                    self.image_path, self.last_result_tags,
+                    reviewed_tags_text=reviewed_text,
+                    tag_scores=self.last_confidences,
+                    thresholds={key: self.settings[key] for key in ("high", "medium", "low")},
+                    app_version=APP_VERSION, model_id=MODEL_ID,
+                )
+                path = append_feedback(FEEDBACK_PATH, record)
+            except (OSError, ValueError, TypeError) as exc:
+                messagebox.showerror("Błąd zapisu korekty", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self.feedback_btn.configure(state="disabled")
+            self.status_var.set(
+                f"Zapisano lokalnie: {path.parent.name}/{path.name} "
+                f"(dodano {len(record['added'])}, usunięto {len(record['removed'])})."
             )
-            path = append_feedback(FEEDBACK_PATH, record)
-        except (OSError, ValueError, TypeError) as exc:
-            messagebox.showerror("Błąd zapisu korekty", str(exc), parent=self)
-            return
-        self.feedback_btn.configure(state="disabled")
-        self.status_var.set(
-            f"Zapisano lokalnie: {path.parent.name}/{path.name} "
-            f"(dodano {len(record['added'])}, usunięto {len(record['removed'])})."
-        )
-        self._activity_event()
+            self._activity_event()
+
+        ttk.Button(footer, text="Anuluj", command=dialog.destroy).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(footer, text="Zapisz korektę", command=commit_review).grid(row=0, column=2)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
 
     def copy_all(self):
         payload = build_copy_all_text(
