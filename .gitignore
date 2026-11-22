@@ -34,3 +34,6 @@ danbooru_tags.sqlite.tmp
 
 # Optional local diagnostics exports
 diagnostics/
+
+# Opt-in manual-review records (local only)
+feedback/
