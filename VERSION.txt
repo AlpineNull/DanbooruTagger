@@ -1,4 +1,4 @@
-Danbooru Tagger v0.7.2
+Danbooru Tagger v0.7.3-dev
 PixAI Tagger v1.0 — model unchanged
 
 FEATURES
@@ -11,6 +11,12 @@ FEATURES
 - Cloudflare challenge detection and backoff; local fallback.
 - Character suggestions, context warnings, and raw confidence exports.
 - Configurable confidence thresholds, blacklist, and VRAM idle unload.
+
+v0.7.3 DEVELOPMENT CHANGES
+- Editable HIGH/MEDIUM/LOWEST outputs and optional local feedback records.
+- Fix translation_request advice for bilingual_text.
+- Clarify that SQLite hit counts represent local metadata records, not SQL queries.
+- Preserve PixAI Tagger v1.0 model weights and existing user caches/settings.
 
 v0.7.2 CHANGES
 - Status messages wrap correctly and no longer overlap the progress bar.
