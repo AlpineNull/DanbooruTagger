@@ -13,7 +13,7 @@ Windows desktop application for tagging anime-style images with **PixAI Tagger v
 ## Features
 
 - Three editable confidence groups: **HIGH**, **MEDIUM**, and **LOWEST**; configurable thresholds, blacklist, and tag copying.
-- **Development v0.7.3:** manually edit confidence buckets and click **Zapisz korektę** to append an opt-in JSONL review record to local `feedback/corrections.jsonl`. Image SHA-256, initial tags/confidences, reviewed tags and differences are recorded; image bytes and local file paths are not. This log is not sent to any service.
+- **Development v0.7.3:** after analysis click **Zapisz korektę**, paste one complete final tag list from your review into a single dialog and save. No manual HIGH/MEDIUM/LOWEST mapping is required. A local `feedback/corrections.jsonl` record contains the image SHA-256, original tags/confidences, reviewed tags and differences; no image bytes or local file paths are stored or uploaded.
 - Local inference with PixAI Tagger v1.0; NVIDIA CUDA acceleration when available, with CPU fallback.
 - Danbooru metadata checks for tag existence, aliases, deprecated tags, and implications.
 - Character-variant suggestions, contextual warnings, and optional raw confidence exports.
