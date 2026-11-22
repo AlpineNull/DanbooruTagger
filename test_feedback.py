@@ -49,3 +49,27 @@ def test_feedback_can_record_review_without_additions(tmp_path):
     assert record["added"] == []
     assert record["removed"] == []
     assert record["reviewed_tags"] == ["1girl"]
+
+
+def test_flat_final_list_does_not_require_original_confidence_buckets(tmp_path):
+    image = tmp_path / "new_image.png"
+    image.write_bytes(b"image content")
+    record = build_feedback_record(
+        image, ["1girl", "solo", "sparkle", "upper_body"],
+        reviewed_tags_text="1girl solo cropped_torso cleavage cropped_torso",
+        tag_scores={"1girl": 0.99, "solo": 0.91, "sparkle": 0.12,
+                    "upper_body": 0.47},
+    )
+    assert record["review_source"] == "final_list"
+    assert record["reviewed_tags"] == ["1girl", "solo", "cropped_torso", "cleavage"]
+    assert record["added"] == ["cropped_torso", "cleavage"]
+    assert record["removed"] == ["sparkle", "upper_body"]
+    assert record["reviewed_buckets"] is None
+
+
+def test_flat_final_list_rejects_empty_input(tmp_path):
+    import pytest
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image bytes")
+    with pytest.raises(ValueError, match="empty"):
+        build_feedback_record(image, ["1girl"], reviewed_tags_text="  ")
