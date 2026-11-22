@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from credential_store import delete_secret, load_secret, save_secret, secret_exists
 from danbooru_client import DanbooruClient
+from feedback_store import append_feedback, build_feedback_record
 from quality_tools import validate_image_path, export_confidences, estimate_character_count
 
 APP_DIR = Path(__file__).resolve().parent
@@ -19,6 +20,8 @@ SETTINGS_PATH = APP_DIR / "settings.json"
 DANBOORU_CACHE_PATH = APP_DIR / "danbooru_cache.json"
 API_KEY_PATH = APP_DIR / "danbooru_api_key.bin"
 MODEL_ID = "pixai-labs/pixai-tagger-v1.0"
+APP_VERSION = "0.7.3"
+FEEDBACK_PATH = APP_DIR / "feedback" / "corrections.jsonl"
 
 # Windows named mutex used to keep the app single-instance.
 # The name intentionally does not contain the app version, so an updated build
@@ -299,7 +302,7 @@ BREAST_SIZE_TAGS = {
 
 def suggested_translation_request(tags):
     tags = set(tags)
-    if "translation_request" in tags or "translated" in tags:
+    if "translation_request" in tags or "translated" in tags or "bilingual_text" in tags:
         return []
     detected = sorted(tags & NON_ENGLISH_TEXT_TAGS)
     return detected
@@ -859,7 +862,7 @@ class SettingsDialog(tk.Toplevel):
 class DanbooruTaggerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Danbooru Tagger v0.7.2")
+        self.title(f"Danbooru Tagger v{APP_VERSION}")
         self.geometry("1060x890")
         self.minsize(840, 700)
         self.settings = load_settings()
@@ -869,6 +872,7 @@ class DanbooruTaggerApp(tk.Tk):
         self.model_device_name = None
         self.busy = False
         self.last_result_tags = []
+        self.last_confidences = {}
         self.last_activity = time.monotonic()
         self.api_key = load_secret(API_KEY_PATH)
         self.danbooru = DanbooruClient(
@@ -895,7 +899,7 @@ class DanbooruTaggerApp(tk.Tk):
         header = ttk.Frame(root)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
-        ttk.Label(header, text="Danbooru Tagger v0.7.2", font=("Segoe UI", 16, "bold")).grid(
+        ttk.Label(header, text=f"Danbooru Tagger v{APP_VERSION}", font=("Segoe UI", 16, "bold")).grid(
             row=0, column=0, sticky="w"
         )
         self.refresh_api_btn = ttk.Button(
@@ -904,7 +908,11 @@ class DanbooruTaggerApp(tk.Tk):
         self.refresh_api_btn.grid(row=0, column=2, sticky="e", padx=(0, 8))
         self.copy_all_btn = ttk.Button(header, text="Kopiuj ALL", command=self.copy_all, state="disabled")
         self.copy_all_btn.grid(row=0, column=3, sticky="e", padx=(0, 8))
-        ttk.Button(header, text="⚙ Ustawienia", command=self.open_settings).grid(row=0, column=4, sticky="e")
+        self.feedback_btn = ttk.Button(
+            header, text="Zapisz korektę", command=self.save_feedback, state="disabled"
+        )
+        self.feedback_btn.grid(row=0, column=4, sticky="e", padx=(0, 8))
+        ttk.Button(header, text="⚙ Ustawienia", command=self.open_settings).grid(row=0, column=5, sticky="e")
 
         choose = ttk.Frame(root)
         choose.grid(row=1, column=0, sticky="ew", pady=(16, 6))
@@ -1053,7 +1061,6 @@ class DanbooruTaggerApp(tk.Tk):
             undo=False,
         )
         text.grid(row=text_row, column=0, sticky="nsew")
-        text.configure(state="disabled")
         self.text_widgets[key] = text
 
     def choose_image(self):
@@ -1069,6 +1076,8 @@ class DanbooruTaggerApp(tk.Tk):
             return
         self.image_path = Path(path)
         self.last_result_tags = []
+        self.last_confidences = {}
+        self.feedback_btn.configure(state="disabled")
         self.refresh_api_btn.configure(state="disabled")
         self.path_var.set(str(self.image_path))
         self.source_var.set("")
@@ -1147,10 +1156,8 @@ class DanbooruTaggerApp(tk.Tk):
 
     def set_text(self, key, value):
         widget = self.text_widgets[key]
-        widget.configure(state="normal")
         widget.delete("1.0", "end")
         widget.insert("1.0", value)
-        widget.configure(state="disabled")
 
     def _bucket_text(self, key):
         return self.text_widgets[key].get("1.0", "end-1c").strip()
@@ -1161,6 +1168,29 @@ class DanbooruTaggerApp(tk.Tk):
         self.clipboard_append(text)
         self.update_idletasks()
         self.status_var.set(f"Skopiowano {key.upper()} do schowka.")
+
+    def save_feedback(self):
+        """Record explicit human review locally, without image path or pixels."""
+        if self.busy or not self.image_path or not self.last_result_tags:
+            return
+        try:
+            edited_buckets = {key: self._bucket_text(key) for key in ("high", "medium", "low")}
+            record = build_feedback_record(
+                self.image_path, self.last_result_tags, edited_buckets,
+                tag_scores=self.last_confidences,
+                thresholds={key: self.settings[key] for key in ("high", "medium", "low")},
+                app_version=APP_VERSION, model_id=MODEL_ID,
+            )
+            path = append_feedback(FEEDBACK_PATH, record)
+        except (OSError, ValueError, TypeError) as exc:
+            messagebox.showerror("Błąd zapisu korekty", str(exc), parent=self)
+            return
+        self.feedback_btn.configure(state="disabled")
+        self.status_var.set(
+            f"Zapisano lokalnie: {path.parent.name}/{path.name} "
+            f"(dodano {len(record['added'])}, usunięto {len(record['removed'])})."
+        )
+        self._activity_event()
 
     def copy_all(self):
         payload = build_copy_all_text(
@@ -1188,6 +1218,7 @@ class DanbooruTaggerApp(tk.Tk):
         )
         if busy:
             self.copy_all_btn.configure(state="disabled")
+            self.feedback_btn.configure(state="disabled")
 
     def analyze(self):
         if self.busy:
@@ -1203,6 +1234,8 @@ class DanbooruTaggerApp(tk.Tk):
             return
         self._activity_event()
         self.last_result_tags = []
+        self.last_confidences = {}
+        self.feedback_btn.configure(state="disabled")
         self.clear_outputs()
         self.set_advice("—")
         self.metrics_var.set("Model: — | GPU: — | Danbooru: — | Razem: —")
@@ -1518,6 +1551,7 @@ class DanbooruTaggerApp(tk.Tk):
 
             def finish():
                 self.last_result_tags = list(final_tags)
+                self.last_confidences = {tag: float(score) for tag, score in items}
                 for key, text in rendered.items():
                     self.set_text(key, text)
                 count = sum(len(v) for v in buckets.values())
@@ -1531,10 +1565,11 @@ class DanbooruTaggerApp(tk.Tk):
                 self.status_var.set(status)
                 self.metrics_var.set(
                     f"Model: {model_load_time:.2f} s | GPU: {gpu_time:.2f} s | "
-                    f"Danbooru: {danbooru_time:.2f} s (JSON {stats['cache_hits']} / SQLite {stats['offline_hits']} / API {stats['api_requests']}) | "
+                    f"Danbooru: {danbooru_time:.2f} s (JSON {stats['cache_hits']} / SQLite rekordy {stats['offline_hits']} / API {stats['api_requests']}) | "
                     f"Razem: {total_time:.2f} s"
                 )
                 self.copy_all_btn.configure(state="normal" if count else "disabled")
+                self.feedback_btn.configure(state="normal" if count else "disabled")
                 self.last_activity = time.monotonic()
 
             self.after(0, finish)
@@ -1549,7 +1584,7 @@ class DanbooruTaggerApp(tk.Tk):
                 stats = self.danbooru.run_stats()
                 self.metrics_var.set(
                     f"Model: {model_load_time:.2f} s | GPU: {gpu_time:.2f} s | "
-                    f"Danbooru: {danbooru_time:.2f} s (JSON {stats['cache_hits']} / SQLite {stats['offline_hits']} / API {stats['api_requests']}) | "
+                    f"Danbooru: {danbooru_time:.2f} s (JSON {stats['cache_hits']} / SQLite rekordy {stats['offline_hits']} / API {stats['api_requests']}) | "
                     f"Razem: {total_time:.2f} s"
                 )
                 self.status_var.set("Błąd analizy. Szczegóły zapisano w error.log.")
